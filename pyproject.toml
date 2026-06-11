@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloud-ci-handoff"
+version = "0.1.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "bmt-sdk",
+    "bmt-runtime",
+    "PyGithub>=2.0",
+    "google-cloud-storage>=2.16",
+    "google-cloud-artifact-registry>=1.14.0",
+    "orjson>=3.10",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.0.0",
+    "requests>=2.31.0",
+    "rich>=13.0",
+    "typer>=0.15.0",
+    "whenever>=0.9.5",
+]
+
+[tool.uv.sources]
+cloud-bmt = { workspace = true }
+bmt-sdk = { workspace = true }
+bmt-runtime = { workspace = true }
+# So that member ci/ can depend on cloud-ci-handoff without listing it (keeps that pyproject portable).
+cloud-ci-handoff = { workspace = true }
+
+# Workspace: one lockfile, shared resolution. See https://docs.astral.sh/uv/concepts/projects/workspaces/
+[tool.uv.workspace]
+members = ["ci", "runtime", "sdk"]
+# exclude = []   # Optional: globs to exclude from members (e.g. a dir with pyproject you don't want as member)
+
+[tool.uv]
+package = true
+
+# Ruff: configured in ruff.toml (line-length 120, py312, select/ignore, per-file-ignores).
+# Root package exposes tools. Workspace members: ci/ (cloud-bmt CLI), runtime/ (bmt-runtime).
+# Run a member with: uv run --package cloud-bmt … or uv run --package bmt-runtime …
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tools*"]
+
+# Typecheck: `uv run ty check` (see `[tool.ty]`). Plugin IDE setup is rooted at the suite `pyproject.toml`.
+[tool.ty.environment]
+python-version = "3.12"
+extra-paths = [
+    "ci",
+    "sdk",
+    "projects/demo",
+    "examples",
+    "infra/pulumi",
+]
+
+[tool.ty.src]
+exclude = [
+    "data",
+    "sk_runtime",
+    "local_batch",
+    "secrets",
+]
+
+# Dependency groups: dev is for workspace-root only (tests, lint, typecheck, local CI helpers).
+# Included by default on `uv sync`; omit with `uv sync --no-dev`.
+[dependency-groups]
+dev = [
+    "cryptography>=46.0.5",
+    "google-auth-stubs>=0.3.0",
+    "httpx>=0.28.1",
+    "jsonschema>=4.21",
+    "cloud-bmt",
+    "prek>=0.3.5",
+    "pulumi>=3.226.0",
+    "pulumi-gcp>=9.15.0",
+    "pyjwt>=2.12.1",
+    "pytest>=9.0.2",
+    "pytest-github-actions-annotate-failures>=0.4.0",
+    "pytest-mock>=3.15.1",
+    "pytest-randomly>=4.0.1",
+    "pytest-rerunfailures>=16.1",
+    "pytest-socket>=0.7.0",
+    "pytest-subprocess>=1.5.3",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.15.6",
+    "ty>=0.0.1",
+    "typer>=0.24.1",
+    "vulture>=2.11",
+    "pylint>=3.3.0",
+    "whenever>=0.9.5",
+]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers -ra --durations=25 --timeout=420 --timeout-method=thread"
+markers = [
+    "unit: pure logic tests without subprocess/network/filesystem coupling",
+    "contract: deterministic behavior tests for CLI command contracts using fakes/mocks",
+    "integration: subprocess/filesystem tests (local orchestration, fakes, or optional binaries)",
+    "bmt_plugin_load: load published BMT plugins from committed plugins/ (import side effects)",
+]

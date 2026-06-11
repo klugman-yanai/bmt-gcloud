@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "project": "template",
+  "description": "Copyable Cloud BMT project scaffold. Not materialized.",
+  "template": true,
+  "python_dependencies": [],
+  "runner": {
+    "uri": "",
+    "deps_prefix": "",
+    "template_path": "runtime/assets/input_template.json"
+  },
+  "bmts": {
+    "example_bmt": {
+      "bmt_id": "replace-with-stable-uuid",
+      "enabled": false,
+      "comparison": "gte",
+      "tolerance_abs": 0.25,
+      "run_notes": [
+        "Optional: replace with operator notes that should always appear in the BMT Gate Check output."
+      ],
+      "reporting_hints": {
+        "metric_short_label": "example score",
+        "success_in_words": "Replace this with project-specific operator copy."
+      }
+    }
+  }
+}

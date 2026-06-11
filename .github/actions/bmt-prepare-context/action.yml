@@ -1,0 +1,217 @@
+name: BMT Prepare
+description: >
+  Emit context, validate vars, parse release runners. PEX-only and caller-tree
+  independent — safe to invoke from cross-repo callers via Cloud Bench-org/cloud-bmt-suite
+  reusable workflow.
+
+inputs:
+  head_sha:
+    description: Head commit SHA under test
+    required: true
+  ci_run_id:
+    description: CI workflow run ID (for artifact download)
+    required: true
+  head_branch:
+    description: Head branch name
+    required: true
+  head_event:
+    description: Event that triggered CI (pull_request or push)
+    required: false
+    default: "push"
+  pr_number:
+    description: PR number (if head_event is pull_request)
+    required: false
+    default: ""
+  bmt_pex_repo:
+    description: >
+      owner/repo for PEX releases. Empty defaults to Cloud Bench-org/cloud-bmt-suite.
+    required: false
+    default: ""
+  bmt_pex_tag:
+    description: >
+      Release tag for bmt.pex (must be bmt-v* or the rolling alias bmt-handoff).
+      Required when this composite is nested: github.action_ref is empty there, so
+      setup-bmt-pex cannot self-discover. Default **bmt-handoff** resolves to the latest **bmt-v*** release.
+    required: false
+    default: bmt-handoff
+  pex_token:
+    description: >
+      Token with read access to the private PEX repo and caller repo. Cross-repo
+      callers should pass secrets.THIRD_PARTY_PAT; defaults to github.token.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  run_id:
+    description: BMT run ID
+    value: ${{ steps.ctx.outputs.run_id }}
+  head_sha:
+    description: Head commit SHA
+    value: ${{ steps.ctx.outputs.head_sha }}
+  head_branch:
+    description: Head branch name
+    value: ${{ steps.ctx.outputs.head_branch }}
+  head_event:
+    description: Event that triggered CI (pull_request or push)
+    value: ${{ steps.ctx.outputs.head_event }}
+  pr_number:
+    description: PR number — resolved from input or (for push events) from the open PR targeting the branch
+    value: ${{ steps.resolve-pr.outputs.pr_number }}
+  run_context:
+    description: Run context (pr or dev)
+    value: ${{ steps.ctx.outputs.run_context }}
+  runner_matrix:
+    description: JSON matrix of release runners from parse-release-runners
+    value: ${{ steps.parse.outputs.runner_matrix }}
+  pex_ready:
+    description: True when setup-bmt-pex succeeded and BMT_PEX_PATH is available
+    value: ${{ steps.pex_state.outputs.pex_ready }}
+
+runs:
+  using: composite
+  steps:
+    - id: pex_setup
+      name: Setup BMT CLI (release PEX, no uv)
+      continue-on-error: true
+      # Nested local `uses: ./...` resolves from the *caller* workspace and breaks when this
+      # composite is fetched via Cloud Bench-org/cloud-bmt-suite/.../bmt-prepare-context@bmt-handoff (or @bmt-v*).
+      # Keep @ref in sync with bmt-handoff.yml composite pins.
+      uses: Cloud Bench-org/cloud-bmt-suite/cloud-ci-handoff/.github/actions/setup-bmt-pex@bmt-handoff
+      with:
+        repo: ${{ inputs.bmt_pex_repo != '' && inputs.bmt_pex_repo || 'Cloud Bench-org/cloud-bmt-suite' }}
+        tag: ${{ inputs.bmt_pex_tag }}
+        python_version: "3.12"
+        token: ${{ inputs.pex_token }}
+
+    - id: pex_state
+      shell: bash
+      run: |
+        if [[ "${{ steps.pex_setup.outcome }}" == "success" && -n "${BMT_PEX_PATH:-}" ]]; then
+          echo "pex_ready=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "pex_ready=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - id: ctx
+      shell: bash
+      run: |
+        pr="${{ inputs.pr_number }}"
+        ev="${{ inputs.head_event }}"
+        if [[ -n "${pr// /}" ]]; then
+          run_context=pr
+        elif [[ "${ev}" == "pull_request" || "${ev}" == "pull_request_target" ]]; then
+          run_context=pr
+        else
+          run_context=dev
+        fi
+        {
+          echo "run_id=${{ inputs.ci_run_id }}"
+          echo "head_sha=${{ inputs.head_sha }}"
+          echo "head_branch=${{ inputs.head_branch }}"
+          echo "head_event=${{ inputs.head_event }}"
+          echo "pr_number=${{ inputs.pr_number }}"
+          echo "run_context=${run_context}"
+        } >> "$GITHUB_OUTPUT"
+
+    # For push events where no pr_number was supplied, look up any open PR that has this
+    # branch as its head. This allows PR comments to be posted even when CI fires as a push.
+    - id: resolve-pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.pex_token }}
+      run: |
+        pr="${{ steps.ctx.outputs.pr_number }}"
+        if [[ -z "${pr// /}" ]] && [[ -n "${{ inputs.head_branch }}" ]]; then
+          pr=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --head "${{ inputs.head_branch }}" \
+            --state open \
+            --json number \
+            --jq '.[0].number // ""' 2>/dev/null || echo "")
+        fi
+        echo "pr_number=${pr}" >> "$GITHUB_OUTPUT"
+
+    - name: Require PR number for PR-scoped handoff
+      shell: bash
+      run: |
+        set -euo pipefail
+        run_context="${{ steps.ctx.outputs.run_context }}"
+        pr_number="${{ steps.resolve-pr.outputs.pr_number }}"
+        head_event="${{ inputs.head_event }}"
+        if [[ "${run_context}" == "pr" ]] && [[ -z "${pr_number// /}" ]]; then
+          echo "::error::BMT handoff run_context=pr but pr_number is empty after resolve (head_event=${head_event}). Refusing to continue."
+          exit 1
+        fi
+
+    - name: Validate required configuration variables
+      shell: bash
+      run: |
+        if [[ -n "${BMT_BUCKET_PREFIX:-}" ]]; then
+          echo "::error::Legacy BMT_BUCKET_PREFIX is set in repository variables. BMT_BUCKET_PREFIX has been removed; clear it in Settings."
+          exit 1
+        fi
+        # Train-stack defaults match runtime/config/constants.py (DEFAULT_*) and
+        # bmt-handoff.yml workflow env (`vars.* || literals`). Composite steps do
+        # not inherit prior-step shell exports; write through GITHUB_ENV so later
+        # steps in this job always see a resolved quartet.
+        : "${GCS_BUCKET:=train-kws-202311-bmt-gate}"
+        : "${GCP_WIF_PROVIDER:=projects/000000000000/locations/global/workloadIdentityPools/bmt-pool/providers/github}"
+        : "${GCP_SA_EMAIL:=bmt-runtime@krdm-bmt.iam.gserviceaccount.com}"
+        : "${GCP_PROJECT:=krdm-bmt}"
+        {
+          echo "GCS_BUCKET=${GCS_BUCKET}"
+          echo "GCP_WIF_PROVIDER=${GCP_WIF_PROVIDER}"
+          echo "GCP_SA_EMAIL=${GCP_SA_EMAIL}"
+          echo "GCP_PROJECT=${GCP_PROJECT}"
+        } >> "$GITHUB_ENV"
+        echo "Proceeding with BMT (GCS_BUCKET / GCP_* resolved)"
+
+    # CMakePresets.json lives in the CALLER's repo (e.g. Cloud Bench-org/core-main).
+    # bmt-handoff jobs run without actions/checkout to keep them lightweight, so we
+    # fetch the file from the caller's contents API at the exact head_sha. Same pattern
+    # as core-main's extract-presets job (independent of any caller-side checkout).
+    - id: fetch_presets
+      name: Fetch CMakePresets.json from caller repo
+      continue-on-error: true
+      shell: bash
+      env:
+        REPO: ${{ github.repository }}
+        REF: ${{ inputs.head_sha }}
+        GH_TOKEN: ${{ inputs.pex_token }}
+      run: |
+        set -euo pipefail
+        url="https://api.github.com/repos/${REPO}/contents/CMakePresets.json?ref=${REF}"
+        for delay in 0 5 10 20; do
+          [[ "$delay" -gt 0 ]] && sleep "$delay"
+          curl -fsSL --connect-timeout 15 --max-time 60 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.raw" \
+            "${url}" -o CMakePresets.json && break
+        done
+        if [[ ! -s CMakePresets.json ]]; then
+          echo "::error::Failed to fetch CMakePresets.json from ${REPO}@${REF}"
+          exit 1
+        fi
+        echo "::notice::Fetched CMakePresets.json from ${REPO}@${REF} ($(wc -c <CMakePresets.json) bytes)"
+
+    - id: parse
+      shell: bash
+      env:
+        BMT_OUTPUT_FORMAT: bmt
+        BMT_OUTPUT_KEY: runner_matrix
+      run: |
+        set -euo pipefail
+        if [[ "${{ steps.pex_state.outputs.pex_ready }}" != "true" ]]; then
+          echo 'runner_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+          echo "::notice::Skipping parse-release-runners (PEX unavailable)."
+          exit 0
+        fi
+        if [[ "${{ steps.fetch_presets.outcome }}" != "success" || ! -s CMakePresets.json ]]; then
+          echo 'runner_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+          echo "::notice::Skipping parse-release-runners (CMakePresets.json unavailable)."
+          exit 0
+        fi
+        if ! "$BMT_PEX_PATH" matrix parse-release-runners; then
+          echo 'runner_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+          echo "::notice::Skipping BMT runner matrix (parse-release-runners failed)."
+        fi

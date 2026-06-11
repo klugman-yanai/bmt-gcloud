@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "tag_prefix": "demo",
+      "gate_project": "demo",
+      "configure_preset": "demo_Release",
+      "build_preset": "demo_Release-build",
+      "bmt_key": "DEMO",
+      "arch": "x86_64",
+      "os_name": "linux"
+    }
+  ]
+}

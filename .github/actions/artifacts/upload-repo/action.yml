@@ -1,0 +1,23 @@
+name: Upload repo artifact
+description: Thin wrapper around actions/upload-artifact for repo snapshot tarballs.
+inputs:
+  name:
+    description: Artifact name
+    required: true
+  path:
+    description: Path to the file to upload
+    required: true
+  retention-days:
+    description: Artifact retention in days
+    required: false
+    default: "5"
+
+runs:
+  using: composite
+  steps:
+    - name: Upload
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}

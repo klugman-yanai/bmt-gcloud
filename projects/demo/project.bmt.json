@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "project": "demo",
+  "description": "Minimal cloud handoff demo project.",
+  "python_dependencies": [],
+  "runner": {
+    "uri": "",
+    "deps_prefix": "",
+    "template_path": "runtime/assets/input_template.json"
+  },
+  "bmts": {
+    "smoke": {
+      "bmt_id": "00000000-0000-4000-8000-000000000001",
+      "enabled": true,
+      "comparison": "gte",
+      "tolerance_abs": 0.0,
+      "run_notes": ["Demo smoke bench for the public template."],
+      "reporting_hints": {
+        "metric_short_label": "demo score",
+        "success_in_words": "Demo bench passed."
+      }
+    }
+  }
+}

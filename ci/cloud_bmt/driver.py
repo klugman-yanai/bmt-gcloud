@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""BMT CI entrypoint (Typer)."""
+
+from __future__ import annotations
+
+import os
+import sys
+from typing import Annotated
+
+import typer
+
+from cloud_bmt import config, core
+from cloud_bmt.actions import gh_error
+from cloud_bmt.handoff import HandoffManager
+from cloud_bmt.matrix import MatrixManager
+from cloud_bmt.preset import PresetManager
+from cloud_bmt.release_cli import app as release_app
+from cloud_bmt.runner import RunnerManager
+from cloud_bmt.baseline_cli import baseline_app
+from cloud_bmt.tag_cli import tag_app
+from cloud_bmt.workflow_dispatch import WorkflowDispatchManager
+from runtime.config.env_parse import is_truthy_env_value
+
+app = typer.Typer(
+    no_args_is_help=True,
+    help="BMT CI driver: matrix, runners, handoff, Workflows dispatch.",
+)
+
+meta_app = typer.Typer(help="Bootstrap helpers.")
+app.add_typer(meta_app, name="meta")
+
+matrix_app = typer.Typer(help="CMake preset matrix for CI and BMT.")
+app.add_typer(matrix_app, name="matrix")
+
+runner_app = typer.Typer(help="Runner artifacts and upload matrix.")
+app.add_typer(runner_app, name="runner")
+
+handoff_app = typer.Typer(help="Context file, status, and summaries.")
+app.add_typer(handoff_app, name="handoff")
+
+dispatch_app = typer.Typer(help="Google Workflows dispatch.")
+app.add_typer(dispatch_app, name="dispatch")
+
+preset_app = typer.Typer(help="Release preset staging.")
+app.add_typer(preset_app, name="preset")
+
+app.add_typer(release_app, name="release")
+app.add_typer(tag_app, name="tag")
+app.add_typer(baseline_app, name="baseline")
+
+
+@meta_app.command("load-env")
+def meta_load_env() -> None:
+    """Write BmtConfig fields to GITHUB_ENV."""
+    config.load_env()
+
+
+@matrix_app.command("build")
+def matrix_build() -> None:
+    """Emit BMT matrix JSON to the ``matrix`` key in ``GITHUB_OUTPUT``."""
+    MatrixManager.from_env().build()
+
+
+@matrix_app.command("filter-supported")
+def matrix_filter_supported() -> None:
+    """Filter matrix to supported runner projects."""
+    MatrixManager.from_env().filter_supported()
+
+
+@matrix_app.command("extract-core-main-presets")
+def matrix_extract_core_main_presets() -> None:
+    """Emit ``presets_release`` / ``presets_nonrelease`` (Cloud Bench-org/core-main parity)."""
+    from pathlib import Path
+
+    from cloud_bmt.matrix_core_main import extract_presets_github_output_from_repo
+
+    rr = Path((os.environ.get("BMT_REPO_ROOT") or ".").strip() or ".").resolve()
+    presets = Path(os.environ.get("BMT_PRESETS_FILE", "CMakePresets.json"))
+    gh_out = core.require_env("GITHUB_OUTPUT")
+    extract_presets_github_output_from_repo(rr, presets, gh_out)
+
+
+@matrix_app.command("ci-snapshot-bmt-gcloud")
+def matrix_ci_snapshot_bmt_gcloud() -> None:
+    """Deprecated alias for ``matrix ci-snapshot-suite`` (historical name; Cloud Bench-org only)."""
+    matrix_ci_snapshot_suite()
+
+
+@matrix_app.command("ci-snapshot-suite")
+def matrix_ci_snapshot_suite() -> None:
+    """Emit ``release_presets`` / ``non_release_presets`` (``build-and-test.yml`` jq parity)."""
+    from pathlib import Path
+
+    from cloud_bmt.matrix_ci_snapshot_bmt_gcloud import write_github_suite_repo_snapshot
+
+    rr = Path((os.environ.get("BMT_REPO_ROOT") or ".").strip() or ".").resolve()
+    presets = Path(os.environ.get("BMT_PRESETS_FILE", "CMakePresets.json"))
+    preset_path = presets.resolve() if presets.is_absolute() else (rr / presets).resolve()
+    gh_out = core.require_env("GITHUB_OUTPUT")
+    write_github_suite_repo_snapshot(
+        preset_path,
+        gh_out,
+        presets_key_release=os.environ.get("BMT_KEY_RELEASE_PRESETS", "release_presets"),
+        presets_key_non=os.environ.get("BMT_KEY_NON_RELEASE_PRESETS", "non_release_presets"),
+    )
+
+
+@matrix_app.command("parse-release-runners")
+def matrix_parse_release_runners() -> None:
+    """Parse CMakePresets for CI or BMT runner rows."""
+    MatrixManager.from_env().parse_release_runners()
+
+
+@runner_app.command("filter-bmt-presets")
+def runner_filter_bmt_presets() -> None:
+    """Upstream artifact metadata subset (core-main ``filter-bmt-presets.sh`` parity)."""
+    RunnerManager.from_env().filter_bmt_presets_upstream()
+
+
+@runner_app.command("bundle-core-main-artifact")
+def runner_bundle_core_main_artifact() -> None:
+    """Stage core-main CI runner artifact dir + metadata.json for upload-artifact."""
+    from cloud_bmt.runner_bundle_core_main import bundle_core_main_artifact
+
+    bundle_core_main_artifact()
+
+
+@runner_app.command("upload")
+def runner_upload() -> None:
+    """Upload runner binaries to GCS."""
+    RunnerManager.from_env().upload()
+
+
+@runner_app.command("filter-upload-matrix")
+def runner_filter_upload_matrix() -> None:
+    """Compute matrix_need_upload from context and GCS."""
+    RunnerManager.from_env().filter_upload_matrix()
+
+
+@runner_app.command("upload-to-gcs")
+def runner_upload_to_gcs() -> None:
+    """chmod + upload runner from artifact/Runners."""
+    RunnerManager.from_env().upload_runner_to_gcs()
+
+
+@runner_app.command("validate-in-repo")
+def runner_validate_in_repo() -> None:
+    """Validate runner exists in bucket or stage mirror."""
+    RunnerManager.from_env().validate_in_repo()
+
+
+@runner_app.command("resolve-uploaded-projects")
+def runner_resolve_uploaded_projects() -> None:
+    """Resolve accepted_projects from upload markers."""
+    RunnerManager.from_env().resolve_uploaded_projects()
+
+
+@runner_app.command("summarize-handshake")
+def runner_summarize_handshake() -> None:
+    """Log matrix handshake line."""
+    RunnerManager.from_env().summarize_matrix_handshake()
+
+
+@runner_app.command("publish-release")
+def runner_publish_release() -> None:
+    """Publish a tag-built runner artifact to gate (one OEM, no handoff)."""
+    RunnerManager.from_env().publish_release()
+
+
+@runner_app.command("normalize-handoff-artifact")
+def runner_normalize_handoff_artifact() -> None:
+    """Stage downloaded runner-* artifact for upload or publish-release."""
+    from cloud_bmt.runner_handoff_normalize import normalize_handoff_artifact
+
+    normalize_handoff_artifact()
+
+
+@handoff_app.command("write-context")
+def handoff_write_context() -> None:
+    """Serialize BmtContext to .bmt/context.json."""
+    HandoffManager.from_env().write_context()
+
+
+@handoff_app.command("resolve-failure-context")
+def handoff_resolve_failure_context() -> None:
+    """Emit mode/head_sha/pr_number for failure fallback."""
+    HandoffManager.from_env().resolve_failure_context()
+
+
+@handoff_app.command("post-pending-status")
+def handoff_post_pending_status() -> None:
+    """Post pending commit status for BMT."""
+    HandoffManager.from_env().post_pending_status()
+
+
+@handoff_app.command("post-timeout-status")
+def handoff_post_timeout_status() -> None:
+    """Post error commit status on handoff timeout."""
+    HandoffManager.from_env().post_handoff_timeout_status()
+
+
+@handoff_app.command("post-infra-skip-status")
+def handoff_post_infra_skip_status(
+    reason: Annotated[str, typer.Option("--reason", help="Short infra failure reason.")] = "infra",
+) -> None:
+    """Post success commit status on BMT Gate when infra prevents dispatch."""
+    HandoffManager.from_env().post_infra_skip_status(reason)
+
+
+@handoff_app.command("validate-dataset-inputs")
+def handoff_validate_dataset_inputs() -> None:
+    """Validate .wav inputs in GCS for accepted BMTs."""
+    HandoffManager.from_env().validate_dataset_inputs()
+
+
+@handoff_app.command("write-summary")
+def handoff_write_summary() -> None:
+    """Append Markdown to GITHUB_STEP_SUMMARY."""
+    HandoffManager.from_env().write_summary()
+
+
+@dispatch_app.command("invoke-workflow")
+def dispatch_invoke_workflow(
+    *,
+    force_pass: Annotated[
+        bool,
+        typer.Option(
+            "--force-pass",
+            help="Skip Google Workflows when set; handoff Plan posts BMT Gate success (merge-gate override). "
+            "Does not start Cloud Run BMT.",
+            envvar="BMT_FORCE_PASS",
+        ),
+    ] = False,
+) -> None:
+    """Start Google Workflow execution for BMT handoff."""
+    fp = bool(force_pass or is_truthy_env_value(os.environ.get("KARDOME_BMT_FORCE_PASS")))
+    WorkflowDispatchManager.from_env().invoke(force_pass=fp)
+
+
+@preset_app.command("stage-release-runner")
+def preset_stage_release_runner() -> None:
+    """Stage release runner paths for upload job."""
+    PresetManager.from_env().stage_release_runner()
+
+
+@preset_app.command("compute-info")
+def preset_compute_info() -> None:
+    """Compute preset binary dir for GITHUB_OUTPUT."""
+    PresetManager.from_env().compute_preset_info()
+
+
+def main() -> None:
+    try:
+        app()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        gh_error(str(exc))
+        sys.exit(1)
+
+
+def main_matrix() -> None:
+    MatrixManager.from_env().build()
+
+
+def main_write_context() -> None:
+    HandoffManager.from_env().write_context()
+
+
+def main_write_handoff_summary() -> None:
+    HandoffManager.from_env().write_summary()
+
+
+if __name__ == "__main__":
+    main()

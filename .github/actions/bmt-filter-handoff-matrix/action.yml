@@ -1,0 +1,67 @@
+name: BMT Classify Handoff
+description: >
+  Resolve uploaded runners, build and filter matrix, decide run vs skip.
+  PEX-only and caller-tree independent. Caller MUST already have authenticated
+  to GCP and run setup-bmt-pex (BMT_PEX_PATH must be set).
+
+inputs:
+  head_sha:
+    description: Head commit SHA under test
+    required: true
+  runner_matrix:
+    description: JSON matrix of release runners from prepare job
+    required: true
+
+outputs:
+  path:
+    description: Handoff path decision (run or skip_no_legs)
+    value: ${{ steps.route.outputs.path }}
+  has_legs:
+    description: Whether filtered matrix has at least one leg
+    value: ${{ steps.filter.outputs.has_legs }}
+  accepted_projects:
+    description: JSON array of projects with uploaded runners
+    value: ${{ steps.list.outputs.accepted_projects }}
+  filtered_matrix:
+    description: JSON matrix filtered to supported uploaded runners
+    value: ${{ steps.filter.outputs.matrix }}
+
+runs:
+  using: composite
+  steps:
+    - id: list
+      env:
+        RUNNER_MATRIX: ${{ inputs.runner_matrix }}
+      shell: bash
+      run: |
+        "$BMT_PEX_PATH" handoff write-context
+        "$BMT_PEX_PATH" runner resolve-uploaded-projects
+
+    - id: filter
+      shell: bash
+      env:
+        RUNNER_MATRIX: ${{ inputs.runner_matrix }}
+        FULL_MATRIX: ${{ inputs.runner_matrix }}
+        ACCEPTED_PROJECTS: ${{ steps.list.outputs.accepted_projects }}
+      run: |
+        "$BMT_PEX_PATH" matrix filter-supported
+
+    - name: Show matrix classification details
+      shell: bash
+      env:
+        RUNNER_MATRIX: ${{ inputs.runner_matrix }}
+        ACCEPTED: ${{ steps.list.outputs.accepted_projects }}
+        FILTERED_MATRIX: ${{ steps.filter.outputs.matrix }}
+      run: |
+        "$BMT_PEX_PATH" handoff write-context
+        "$BMT_PEX_PATH" runner summarize-handshake
+
+    - id: route
+      shell: bash
+      run: |
+        if [[ "${{ steps.filter.outputs.has_legs }}" == "true" ]]; then
+          echo "path=run" >>"$GITHUB_OUTPUT"
+        else
+          echo "::notice::No supported uploaded legs to hand off."
+          echo "path=skip_no_legs" >>"$GITHUB_OUTPUT"
+        fi

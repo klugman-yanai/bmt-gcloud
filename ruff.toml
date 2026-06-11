@@ -1,0 +1,139 @@
+# ruff.toml — cloud-bmt-suite Cloud BMT backend
+# https://docs.astral.sh/ruff/ | https://docs.astral.sh/ruff/rules/
+# Use Ruff extension (charliermarsh.ruff) for on-save linting/formatting.
+
+line-length = 120
+target-version = "py312"
+fix = true
+show-fixes = true
+preview = false
+
+exclude = [".git", ".venv", "build", "dist", "data", "sk_runtime", "local_batch", "secrets"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+skip-magic-trailing-comma = false
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[lint]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific rules
+    "PL",  # pylint
+    "S",   # flake8-bandit
+    "C4",  # flake8-comprehensions
+    "A",   # flake8-builtins
+    "C90", # mccabe complexity
+    "N",   # pep8-naming
+]
+
+extend-select = [
+    "PERF", # perflint
+    "SIM",  # flake8-simplify
+    "T20",  # flake8-print
+    "ERA",  # eradicate
+    "FBT",  # flake8-boolean-trap
+    "DTZ",  # flake8-datetimez
+    "FA",   # flake8-future-annotations
+    "ISC",  # flake8-implicit-str-concat
+    "PTH",  # flake8-use-pathlib
+    "TID",  # flake8-tidy-imports
+    "PT",   # flake8-pytest-style
+    "G",    # flake8-logging
+    "ARG",  # flake8-unused-arguments
+    "FURB", # refurb
+    "TRY",  # tryceratops
+    "PIE",  # flake8-pie
+    "RET",  # flake8-return (return consistency, avoid assignment-before-return)
+    "ICN",  # flake8-import-conventions (e.g. numpy as np)
+]
+
+# Optional rule sets: uncomment and add to extend-select to enable.
+# COM  = flake8-commas (trailing comma style; formatter may already enforce)
+# Q    = flake8-quotes (quote consistency; formatter handles double by default)
+# RSE  = flake8-raise (prefer raise X from e, avoid redundant raise)
+# LOG  = flake8-logging-format (logging format args)
+# EM   = flake8-errmsg (exception message style)
+# TC   = flake8-type-checking (move typing-only imports into TYPE_CHECKING)
+# SLF  = flake8-self (self/cls usage)
+# extend-select = [..., "COM", "PIE", "Q", "RSE", "RET", "ICN", "LOG", "EM", "TC", "SLF"]
+
+ignore = [
+    "E501",    # line length handled by formatter
+    "PLR2004", # magic values in comparisons
+    "PLR0913", # too many arguments
+    "S101",    # assert is acceptable
+    "S603",    # trusted subprocess usage (gcloud, runner)
+    "S607",    # trusted partial executable paths
+]
+
+extend-ignore = [
+    "COM812",  # missing trailing comma — handled by formatter
+    "ISC001",  # single-line implicit string concat — handled by formatter
+    "EM101",   # exception message formatting
+    "EM102",   # exception message formatting
+    "TRY300",  # tryceratops: exception handling
+    "TRY301",  # tryceratops: exception handling
+    "TRY003",  # long exception messages OK (runtime errors, user-facing)
+    "SIM108",  # readability vs terseness
+    "RET504",  # assignment-before-return (debuggability tradeoff)
+    "ARG002",  # unused method argument (interfaces/callbacks)
+    "PLR6301", # method could be function (noisy for pytest/extensibility)
+    "PERF401", # list comprehension optional (explicit loops acceptable)
+    "S310",    # urlopen: VM watcher uses HTTPS only; bandit heuristic too strict
+    "S105",    # false positive: constant names like STATUS_PASS not passwords
+]
+
+[lint.isort]
+known-first-party = ["bmt"]
+combine-as-imports = true
+force-single-line = false
+force-wrap-aliases = false
+split-on-trailing-comma = true
+
+[lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[lint.flake8-type-checking]
+strict = true
+
+[lint.mccabe]
+max-complexity = 10
+
+[lint.per-file-ignores]
+# Plugin workers lazy-import manifest views inside _context() to keep worker import light.
+"../projects/*/plugins/**/src/**/worker.py" = ["PLC0415"]
+"../examples/**/worker.py" = ["PLC0415"]
+"scripts/**" = ["T20", "C901"]
+"infra/pulumi/**" = ["S106"]
+"runtime/**" = ["PLC0415"]
+"tests/**" = [
+    "S101", "PLR2004", "PLR0913", "T20", "ARG001", "RUF059",
+    "PLC0415", "FBT001", "FBT002", "F401", "S108", "S110",
+    "B007", "B017", "PT011", "PT018", "SLF001",
+]
+"tools/**" = [
+    "ERA001", "T20", "E402", "PLC0415", "PLR0911", "PLR0912",
+    "PLR0915", "C901", "G004", "TC003", "FBT001", "FBT002",
+    "TRY004", "ARG001", "SIM117",
+]
+"runtime/vm_watcher.py" = [
+    "C901", "PLR0911", "PLR0912", "PLR0915", "S110",
+]
+"ci/**" = [
+    "T20", "ARG001", "PLC0415", "I001", "C901", "PLR0912", "PLR0915",
+]
+"deploy/**" = [
+    "T20", "ARG001", "FBT001", "FBT002", "S108", "C901",
+    "PLR0912", "PLR0915", "PLW0603",
+]

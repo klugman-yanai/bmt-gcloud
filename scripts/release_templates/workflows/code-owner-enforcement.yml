@@ -1,0 +1,15 @@
+name: Deprecated Code Owner Check
+
+# Kept only so release bundles continue to include a stable placeholder file.
+# CODEOWNERS review is enforced natively by the branch ruleset.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deprecated; CODEOWNERS is enforced by branch protection."

@@ -1,0 +1,150 @@
+name: Setup cloud-bmt PEX
+description: >
+  Self-contained PEX-only BMT CLI setup for cross-repo callers. Installs Python 3.12
+  (PEX runtime), downloads bmt.pex from a GitHub Release (with Actions cache keyed by
+  repo + resolved release tag), and exports BMT_PEX_PATH for downstream steps. The PEX
+  bundles the full cloud-bmt CLI; nothing else from this publishing repo is needed
+  at runtime. Unlike setup-bmt-cli, this action does NOT run uv sync, has no dependency
+  on the caller's checkout, and is the canonical setup used by bmt-handoff.yml when
+  callers consume it cross-repo (e.g. Cloud Bench-org/core-main).
+
+inputs:
+  tag:
+    description: >-
+      Release tag containing bmt.pex. Defaults to github.action_ref (the ref that
+      loaded this action).
+      Special case: refs `bmt-handoff` and `bmt-latest` resolve to the `bmt-v*` tag at the
+      same commit as that rolling git ref (via git refs API, not `gh release list`, so
+      cross-repo callers without release-list access still get the latest PEX). For
+      `@<sha>` or `@<branch>` when action_ref is not `bmt-v*`, `bmt-handoff`, or
+      `bmt-latest`, pass `tag: bmt-v0.3.x` explicitly.
+    required: false
+    default: ${{ github.action_ref }}
+  repo:
+    description: >
+      owner/name of the repo that published bmt.pex. Defaults to Cloud Bench-org/cloud-bmt-suite when empty.
+    required: false
+    default: Cloud Bench-org/cloud-bmt-suite
+  python_version:
+    description: Python version for the PEX runtime.
+    required: false
+    default: "3.12"
+  out_path:
+    description: Directory to place bmt.pex (relative to GITHUB_WORKSPACE).
+    required: false
+    default: ".local/bmt"
+  token:
+    description: >
+      Token with contents:read on the release repo (default github.token). Rolling-ref
+      resolution uses git refs/tags only; release download still needs read access to
+      release assets. Caller jobs must grant ``actions: write`` so ``actions/cache``
+      can save ``bmt.pex``.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        repo="${{ inputs.repo }}"
+        tag="${{ inputs.tag }}"
+        if [[ -z "$tag" ]]; then
+          echo "::error::setup-bmt-pex: tag is required; could not self-discover from github.action_ref ('${{ github.action_ref }}'). Pass \`with: tag: bmt-v0.3.x\` explicitly."
+          exit 1
+        fi
+        if [[ "$tag" == "bmt-handoff" || "$tag" == "bmt-latest" ]]; then
+          rolling="$tag"
+          # Rolling tags point at the releasing commit (build-cloud-bmt-pex.yml). Resolve
+          # the semver bmt-v* tag at that SHA via git refs — not gh release list — so
+          # cross-repo GITHUB_TOKEN (e.g. core-main) need not list private releases.
+          handoff_json="$(gh api "repos/${repo}/git/ref/tags/${rolling}")"
+          handoff_type="$(jq -r '.object.type' <<<"$handoff_json")"
+          handoff_sha="$(jq -r '.object.sha' <<<"$handoff_json")"
+          if [[ "$handoff_type" == "tag" ]]; then
+            handoff_sha="$(gh api "repos/${repo}/git/tags/${handoff_sha}" -q '.object.sha')"
+          fi
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${repo}.git"
+          tag="$(
+            git -c 'credential.helper=' ls-remote --tags "$remote" 'refs/tags/bmt-v*' \
+            | awk -v want="${handoff_sha}" '
+                match($2, /^refs\/tags\/(bmt-v[0-9]+\.[0-9]+\.[0-9]+)\^\{\}$/, m) {
+                  if ($1 == want) print m[1]
+                }
+                match($2, /^refs\/tags\/(bmt-v[0-9]+\.[0-9]+\.[0-9]+)$/, m) {
+                  if ($1 == want) print m[1]
+                }
+              ' | sort -V | tail -n1 || true
+          )"
+          if [[ -z "$tag" ]]; then
+            # Handoff may point at a CI-only commit (e.g. before the next PEX publish). Fall back to
+            # the newest bmt-v* tag visible via git — still no gh release list / GraphQL repo access.
+            tag="$(
+              git -c 'credential.helper=' ls-remote --tags "$remote" 'refs/tags/bmt-v*' \
+              | awk '
+                  match($2, /^refs\/tags\/(bmt-v[0-9]+\.[0-9]+\.[0-9]+)\^\{\}$/, m) { print m[1] }
+                  match($2, /^refs\/tags\/(bmt-v[0-9]+\.[0-9]+\.[0-9]+)$/, m) { print m[1] }
+                ' | sort -V | uniq | tail -n1 || true
+            )"
+            if [[ -n "$tag" ]]; then
+              echo "::notice::setup-bmt-pex: no bmt-v* at ${rolling}@${handoff_sha:0:7}; using latest ${tag} for PEX download"
+            fi
+          else
+            echo "::notice::setup-bmt-pex: resolved ${rolling}@${handoff_sha:0:7} → ${tag} for PEX download"
+          fi
+          if [[ -z "$tag" ]]; then
+            echo "::error::setup-bmt-pex: could not resolve rolling ref ${rolling} (commit ${handoff_sha}) to any bmt-v* tag on $repo"
+            exit 1
+          fi
+        fi
+        if [[ "$tag" != bmt-v* ]]; then
+          echo "::error::setup-bmt-pex: tag '$tag' is not a bmt-v* release tag after resolution. If you invoked this action via @<sha> or @<branch>, pass \`with: tag: bmt-v0.3.x\` explicitly."
+          exit 1
+        fi
+        {
+          echo "BMT_PEX_DOWNLOAD_TAG=${tag}"
+        } >> "$GITHUB_ENV"
+
+    - name: Setup Python for PEX
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python_version }}
+
+    - name: Prepare PEX output directory
+      shell: bash
+      run: mkdir -p "${GITHUB_WORKSPACE}/${{ inputs.out_path }}"
+
+    - name: Cache bmt.pex
+      id: cache_bmt_pex
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/${{ inputs.out_path }}/bmt.pex
+        key: bmt-pex-${{ inputs.repo }}-${{ env.BMT_PEX_DOWNLOAD_TAG }}
+
+    - name: Download bmt.pex
+      if: steps.cache_bmt_pex.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        out="${GITHUB_WORKSPACE}/${{ inputs.out_path }}"
+        gh release download "${BMT_PEX_DOWNLOAD_TAG}" \
+          -R "${{ inputs.repo }}" \
+          -p "bmt.pex" \
+          -D "$out"
+
+    - name: Export BMT_PEX_PATH
+      shell: bash
+      run: |
+        set -euo pipefail
+        out="${GITHUB_WORKSPACE}/${{ inputs.out_path }}"
+        chmod +x "$out/bmt.pex"
+        echo "BMT_PEX_PATH=${out}/bmt.pex" >> "$GITHUB_ENV"
+        if [[ "${{ steps.cache_bmt_pex.outputs.cache-hit }}" == "true" ]]; then
+          echo "::notice::setup-bmt-pex: restored bmt.pex from Actions cache (${BMT_PEX_DOWNLOAD_TAG})"
+        fi

@@ -1,0 +1,52 @@
+name: BMT infra skip gate
+description: Post success on BMT Gate when handoff infra prevents Cloud Run dispatch.
+
+inputs:
+  repository:
+    description: Target repository (owner/name).
+    required: true
+  head_sha:
+    description: Commit SHA to attach the status to.
+    required: true
+  reason:
+    description: Short infra failure reason (≤100 chars recommended).
+    required: true
+  status_context:
+    description: Commit status context name.
+    required: false
+    default: BMT Gate
+  github_token:
+    description: Token with statuses:write on the target repository.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Post infra-skip BMT Gate status
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        HEAD_SHA: ${{ inputs.head_sha }}
+        REASON: ${{ inputs.reason }}
+        STATUS_CONTEXT: ${{ inputs.status_context }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        detail="$(printf '%s' "$REASON" | tr '\n' ' ' | sed 's/  */ /g')"
+        if [[ "$detail" == force_pass* ]]; then
+          description="BMT Gate override (${detail})"
+        else
+          description="BMT skipped (infra: ${detail})"
+        fi
+        description="${description:0:140}"
+        payload="$(jq -nc \
+          --arg state "success" \
+          --arg context "$STATUS_CONTEXT" \
+          --arg description "$description" \
+          '{state: $state, context: $context, description: $description}')"
+        gh api \
+          -H "Accept: application/vnd.github+json" \
+          "repos/${REPOSITORY}/statuses/${HEAD_SHA}" \
+          --input - <<<"$payload"
+        echo "::notice::Posted infra-skip status ${STATUS_CONTEXT}=success for ${HEAD_SHA}."
